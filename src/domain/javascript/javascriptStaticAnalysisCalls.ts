@@ -13,6 +13,7 @@ import {
   argumentValue,
   calleeName,
   endpointArgument as endpointArgumentHelper,
+  isWebSocketEndpointCandidate,
   prefixedArgument,
   range,
   rangeForOffsets,
@@ -470,12 +471,7 @@ const inspectEndpointCall = (
   // browser request API. Do not let the literal fallback turn it into one.
   if (isNetworkRequestSpelling(name)) return;
   const receiverFact = context.openReceiverFacts?.get(node.start ?? -1);
-  const endpoint = endpointArgumentHelper(
-    name,
-    node.arguments,
-    node.callee,
-    receiverFact,
-  );
+  const endpoint = endpointArgumentHelper(name, node, bindings, receiverFact);
   if (endpoint !== undefined)
     addEndpoint(context, {
       node,
@@ -508,7 +504,7 @@ const isKnownNetworkRequest = (
     return true;
   if (
     t.isNewExpression(node) &&
-    (isUnmodifiedGlobalReference(node.callee, bindings, "WebSocket") ||
+    (isWebSocketEndpointCandidate(node.callee, bindings) ||
       isUnmodifiedGlobalReference(node.callee, bindings, "EventSource"))
   )
     return true;

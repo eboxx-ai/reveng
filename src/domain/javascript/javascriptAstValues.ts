@@ -1,5 +1,14 @@
 import * as t from "@babel/types";
 import type { JavaScriptSemanticPrimitive } from "./javascriptSemanticValueTypes.js";
+import { semanticArrayIndex } from "./javascriptSemanticPropertyPaths.js";
+
+/** All class field forms share value timing; keys remain definition-time syntax. */
+export const javaScriptClassField = (
+  node: t.Node | null | undefined,
+): node is t.ClassProperty | t.ClassPrivateProperty | t.ClassAccessorProperty =>
+  t.isClassProperty(node) ||
+  t.isClassPrivateProperty(node) ||
+  t.isClassAccessorProperty(node);
 
 /** TypeScript receiver annotations occupy no positional runtime parameter slot. */
 export const runtimeFunctionParameters = (
@@ -43,6 +52,39 @@ export const unwrapJavaScriptExpression = (
   return { node: current, depth };
 };
 
+/** Result identity follows only one syntax-proven selected operand. */
+export const javaScriptExactResultOperand = (
+  node: t.Node,
+  assignmentCompletes?: (node: t.AssignmentExpression) => boolean,
+): t.Node | undefined => {
+  node = unwrapJavaScriptExpression(node).node;
+  if (t.isSequenceExpression(node)) return node.expressions.at(-1);
+  if (t.isConditionalExpression(node)) {
+    const test = readExactJavaScriptLiteral(node.test);
+    return test.found
+      ? test.value
+        ? node.consequent
+        : node.alternate
+      : undefined;
+  }
+  if (t.isLogicalExpression(node)) {
+    const left = readExactJavaScriptLiteral(node.left);
+    if (!left.found) return undefined;
+    const right =
+      node.operator === "??"
+        ? left.value === null || left.value === undefined
+        : node.operator === "&&"
+          ? Boolean(left.value)
+          : !left.value;
+    return right ? node.right : node.left;
+  }
+  return t.isAssignmentExpression(node) &&
+    node.operator === "=" &&
+    assignmentCompletes?.(node) === true
+    ? node.right
+    : undefined;
+};
+
 /** Read one syntax-level primitive only when its value is exact. */
 export const readExactJavaScriptLiteral = (
   node: t.Node,
@@ -82,6 +124,26 @@ export const semanticStaticPropertyName = (
   computed: boolean,
 ): string => semanticStaticPropertyKey(property, computed) ?? "";
 
+/** One parameter-free returned expression; async settlement consumers opt in explicitly. */
+export const semanticDirectFunctionReturn = (
+  node: t.Node,
+  options?: { readonly allowAsync: boolean },
+): t.Node | undefined => {
+  if (
+    !t.isFunction(node) ||
+    (node.async && options?.allowAsync !== true) ||
+    node.generator ||
+    node.params.length !== 0
+  )
+    return undefined;
+  if (!t.isBlockStatement(node.body)) return node.body;
+  const statements = node.body.body.filter((item) => !t.isEmptyStatement(item));
+  const statement = statements[0];
+  return statements.length === 1 && t.isReturnStatement(statement)
+    ? (statement.argument ?? undefined)
+    : undefined;
+};
+
 /** Read an exact property key, preserving the legal empty-string key. */
 export const semanticStaticPropertyKey = (
   property: t.Node,
@@ -108,19 +170,131 @@ export const semanticStaticPropertyKey = (
 };
 
 /** Later properties own a key; an intervening dynamic write leaves it unknown. */
-export const semanticFinalObjectProperty = (
+export const semanticFinalObjectMember = (
   node: t.ObjectExpression,
   key: string,
-): t.Node | undefined => {
+  access: "get" | "set" = "get",
+): t.ObjectProperty | t.ObjectMethod | undefined => {
+  let accessor = false;
   for (let index = node.properties.length - 1; index >= 0; index -= 1) {
     const property = node.properties[index];
     if (property === undefined || t.isSpreadElement(property)) return undefined;
     const name = semanticStaticPropertyKey(property.key, property.computed);
     if (name === null) return undefined;
-    if (name === key)
-      return t.isObjectProperty(property) ? property.value : undefined;
+    if (name !== key) continue;
+    if (
+      t.isObjectMethod(property) &&
+      property.kind === (access === "get" ? "set" : "get")
+    ) {
+      accessor = true;
+      continue;
+    }
+    return !accessor || (t.isObjectMethod(property) && property.kind === access)
+      ? property
+      : undefined;
   }
   return undefined;
+};
+
+/** Select a data value without substituting a getter or method for that value. */
+export const semanticFinalObjectProperty = (
+  node: t.ObjectExpression,
+  key: string,
+): t.Node | undefined => {
+  const property = semanticFinalObjectMember(node, key);
+  return t.isObjectProperty(property) ? property.value : undefined;
+};
+
+/** Class fields initialize after all method definitions, in field order. */
+export const semanticFinalClassMember = (
+  node: t.ClassExpression,
+  key: string,
+  isStatic = true,
+  access: "get" | "set" = "get",
+): t.ClassMethod | t.ClassProperty | undefined => {
+  if (!isStatic && node.superClass != null) return undefined;
+  if (node.decorators != null && node.decorators.length !== 0) return undefined;
+  let method: t.ClassMethod | undefined;
+  let field: t.ClassProperty | undefined;
+  for (const member of node.body.body) {
+    if (
+      t.isStaticBlock(member) ||
+      (!isStatic && t.isClassMethod(member) && member.kind === "constructor")
+    )
+      return undefined;
+    if (
+      (!t.isClassMethod(member) && !javaScriptClassField(member)) ||
+      member.static !== isStatic
+    )
+      continue;
+    // Accessor definitions and private names are not public data selections.
+    if (t.isClassPrivateProperty(member)) continue;
+    if (t.isClassAccessorProperty(member)) return undefined;
+    const name = semanticStaticPropertyKey(member.key, member.computed);
+    if (
+      name === null ||
+      (member.decorators != null && member.decorators.length !== 0)
+    )
+      return undefined;
+    if (t.isClassProperty(member)) {
+      if (
+        member.value != null &&
+        !readExactJavaScriptLiteral(member.value).found &&
+        !t.isFunctionExpression(member.value) &&
+        !t.isArrowFunctionExpression(member.value)
+      )
+        return undefined;
+      if (name === key) field = member;
+    } else if (name === key) {
+      // Accessor definitions update only their own descriptor half.
+      method =
+        member.kind === (access === "get" ? "set" : "get")
+          ? method?.kind === access
+            ? method
+            : undefined
+          : member;
+    }
+  }
+  return field ?? method;
+};
+
+/** Preserve allocation identity through expressions with one exact result. */
+export const semanticLiteralContainer = (
+  rawNode: t.Node,
+  exactResult: (
+    node: t.Node,
+  ) => t.Node | undefined = javaScriptExactResultOperand,
+): t.ObjectExpression | t.ArrayExpression | undefined => {
+  let node = unwrapJavaScriptExpression(rawNode).node;
+  for (;;) {
+    const result = exactResult(node);
+    if (result === undefined) break;
+    node = unwrapJavaScriptExpression(result).node;
+  }
+  return t.isObjectExpression(node) || t.isArrayExpression(node)
+    ? node
+    : undefined;
+};
+
+/** Project literal syntax; callers separately prove mutation and iteration. */
+export const semanticLiteralProperty = (
+  rawNode: t.Node,
+  key: string | number,
+  exactResult?: (node: t.Node) => t.Node | undefined,
+): t.Node | undefined => {
+  const node = semanticLiteralContainer(rawNode, exactResult);
+  // Numeric projections denote array-pattern iteration, not property lookup.
+  // Object patterns retain string keys, including a numeric property's spelling.
+  if (typeof key === "number" && !t.isArrayExpression(node)) return undefined;
+  if (t.isObjectExpression(node))
+    return semanticFinalObjectProperty(node, String(key));
+  if (!t.isArrayExpression(node)) return undefined;
+  const index = semanticArrayIndex(key);
+  if (index === null || index >= node.elements.length) return undefined;
+  // Earlier spreads make the selected position uncertain; later spreads do not.
+  if (node.elements.slice(0, index + 1).some((item) => t.isSpreadElement(item)))
+    return undefined;
+  return node.elements[index] ?? undefined;
 };
 
 export const semanticFinalObjectStringProperty = (
@@ -212,3 +386,54 @@ export function* semanticWriteTargets(
  */
 export const javascriptDisplayText = (value: string): string =>
   value === "" ? '""' : value;
+
+/** A target leaf writes without a value read unless its owning operation reads first. */
+const semanticValueTargetSite = (
+  node: t.Node,
+  parents: WeakMap<t.Node, t.Node>,
+): t.Node | undefined => {
+  let current = node;
+  for (;;) {
+    const parent = parents.get(current);
+    if (parent === undefined) return undefined;
+    const target = semanticWriteSiteTarget(parent);
+    if (target !== null) {
+      for (const leaf of semanticWriteTargets(target))
+        if (leaf === node) return parent;
+      return undefined;
+    }
+    if (
+      !(
+        unwrapJavaScriptExpression(parent).node === current ||
+        (t.isArrayPattern(parent) &&
+          parent.elements.includes(current as t.Pattern)) ||
+        (t.isRestElement(parent) && parent.argument === current) ||
+        (t.isAssignmentPattern(parent) && parent.left === current) ||
+        (t.isObjectProperty(parent) &&
+          parent.value === current &&
+          t.isObjectPattern(parents.get(parent))) ||
+        t.isObjectPattern(parent)
+      )
+    )
+      return undefined;
+    current = parent;
+  }
+};
+
+/** Getter reads and setter writes share one target-role interpretation. */
+export const semanticValueIsRead = (
+  node: t.Node,
+  parents: WeakMap<t.Node, t.Node>,
+): boolean => {
+  const site = semanticValueTargetSite(node, parents);
+  return site === undefined || semanticWriteSiteReadsFirst(site);
+};
+
+/** Delete removes a descriptor; it does not call its setter. */
+export const semanticValueWriteSite = (
+  node: t.Node,
+  parents: WeakMap<t.Node, t.Node>,
+): t.Node | undefined => {
+  const site = semanticValueTargetSite(node, parents);
+  return t.isUnaryExpression(site, { operator: "delete" }) ? undefined : site;
+};

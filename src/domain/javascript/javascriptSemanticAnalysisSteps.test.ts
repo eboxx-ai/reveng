@@ -185,6 +185,7 @@ export function local(ambient, NativeWindow) {
 }
 ambient.open("/global");
 new NativeWindow();
+globalThis.WebSocket = replacement;
 `;
   const parsed = parseJavaScriptSource(text, "receivers.js");
   if (parsed === null) throw new Error("Expected parsed source");
@@ -196,6 +197,10 @@ new NativeWindow();
     [text.indexOf('ambient.open("/local")'), "local"],
     [text.indexOf('ambient.open("/global")'), "window"],
   ]);
+  completeSemanticSteps(openStep.value.indexAmbientWritesSteps());
+  expect(
+    openStep.value.bindings.ambientWrites.covers(["global", "WebSocket"]),
+  ).toBe(true);
 
   const electronSteps = classifyParsedJavaScriptElectronBindingsSteps(parsed);
   let electronStep = electronSteps.next();
