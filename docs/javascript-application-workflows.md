@@ -288,6 +288,11 @@ and the result includes its basis, candidates, changed dimensions, Evidence
 links, limitations, and a `changed_from` graph containing all compared nodes,
 their observations, and relationships.
 
+An exact match (content digest, module-source digest, or node identity) whose
+only differing dimension is `location` is `unchanged`: bundle relocation shifts
+byte offsets without changing content. The `location` dimension and a relocation
+limitation are retained, and no `changed_from` edge is emitted.
+
 One-sided absence is `added` or `removed` only when the opposite input graph has
 complete coverage. With partial, unavailable, or truncated input, the same
 condition is `unknown`. The comparison retains every classified item and

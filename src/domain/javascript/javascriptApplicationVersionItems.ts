@@ -144,11 +144,20 @@ const matchedItem = (
 ): ApplicationVersionComparisonItem => {
   const dimensions = changedDimensions(pair, context);
   const complete = graphsComplete(context);
-  const observedChange = dimensions.some((dimension) =>
-    ["content", "location", "properties"].includes(dimension),
-  );
+  const locationOnlyRelocation =
+    dimensions.length === 1 &&
+    dimensions[0] === "location" &&
+    (pair.basis === "exact-content-digest" ||
+      pair.basis === "exact-module-source-digest" ||
+      pair.basis === "exact-node-identity");
+  const observedChange =
+    !locationOnlyRelocation &&
+    dimensions.some((dimension) =>
+      ["content", "location", "properties"].includes(dimension),
+    );
   const status: ApplicationVersionComparisonItem["status"] =
-    observedChange || (complete && dimensions.length > 0)
+    observedChange ||
+    (complete && dimensions.length > 0 && !locationOnlyRelocation)
       ? "changed"
       : complete
         ? "unchanged"
@@ -165,7 +174,10 @@ const matchedItem = (
     match: matchedMatch(pair),
     dimensions: finalDimensions,
     evidence_links: itemEvidenceLinks(pair.left, pair.right, context),
-    limitations: pairLimitations(pair, status),
+    limitations: [
+      ...pairLimitations(pair, status),
+      ...(locationOnlyRelocation ? [RELOCATED_LIMITATION] : []),
+    ],
   };
   return itemWithId(semantic);
 };
@@ -314,6 +326,8 @@ const AMBIGUOUS_MATCH_LIMITATION =
   "Multiple nodes share the same permitted match key; no cross-version pair was selected.";
 const INCOMPLETE_GRAPH_LIMITATION =
   "The opposite graph is incomplete, so an unmatched node cannot be classified as added or removed.";
+const RELOCATED_LIMITATION =
+  "Exact content is identical on both sides; only the recorded byte location differs (bundle relocation).";
 
 const changedDimensions = (
   pair: ApplicationVersionNodePair,

@@ -229,6 +229,152 @@ describe("application version comparison Evidence links", () => {
   });
 });
 
+describe("application version comparison relocation", () => {
+  it("classifies an exact-source location-only move as unchanged", () => {
+    const moduleSha = "c".repeat(64);
+    const evidenceAt = (start: number, end: number) => ({
+      ...artifactEvidence(moduleSha, "mod.js"),
+      location: {
+        available: true as const,
+        value: {
+          kind: "file-offset-range" as const,
+          start,
+          end,
+        },
+      },
+    });
+    const nodeAt = (start: number, end: number) =>
+      createJavaScriptApplicationNode({
+        kind: "javascript-module",
+        identity: {
+          strategy: "content-digest",
+          stability: "global-exact",
+          sha256: moduleSha,
+        },
+        observations: [
+          {
+            label: "mod.js",
+            properties: {},
+            evidence: evidenceAt(start, end),
+          },
+        ],
+      });
+    const leftNode = nodeAt(0, 100);
+    const rightNode = nodeAt(200, 300);
+    const graphFor = (
+      artifactSha: string,
+      node: typeof leftNode,
+    ): JavaScriptApplicationGraph =>
+      createJavaScriptApplicationGraph({
+        schema: "JavaScriptApplicationGraph",
+        root_node_ids: [node.node_id],
+        nodes: [node],
+        edges: [],
+        coverage: completeCoverage,
+        limitations: [],
+      });
+    const result = compareJavaScriptApplicationVersions({
+      left: {
+        evidenceId: `ev_${"1".repeat(64)}`,
+        rootArtifactSha256: LEFT_SHA,
+        graph: graphFor(LEFT_SHA, leftNode),
+      },
+      right: {
+        evidenceId: `ev_${"2".repeat(64)}`,
+        rootArtifactSha256: RIGHT_SHA,
+        graph: graphFor(RIGHT_SHA, rightNode),
+      },
+      leftNativeEvidence: [],
+      rightNativeEvidence: [],
+    });
+    expect(result.matching.exact_content_digest).toBe(1);
+    const item = result.items.find(
+      ({ left_node_id: id }) => id === leftNode.node_id,
+    );
+    expect(item).toMatchObject({
+      status: "unchanged",
+      dimensions: ["location"],
+      match: { status: "matched", basis: "exact-content-digest" },
+    });
+    expect(item?.limitations).toContain(
+      "Exact content is identical on both sides; only the recorded byte location differs (bundle relocation).",
+    );
+    expect(result.summary).toMatchObject({ unchanged: 1, changed: 0 });
+    expect(
+      result.graph.edges.some(({ relation }) => relation === "changed_from"),
+    ).toBe(false);
+  });
+
+  it("classifies an exact module-source location-only move as unchanged", () => {
+    const moduleShaFallback = "e".repeat(64);
+    const source = "d".repeat(64);
+    const evidenceAt = (start: number, end: number) => ({
+      ...artifactEvidence(moduleShaFallback, "bundle.js"),
+      location: {
+        available: true as const,
+        value: {
+          kind: "file-offset-range" as const,
+          start,
+          end,
+        },
+      },
+    });
+    const nodeAt = (start: number, end: number) =>
+      createJavaScriptApplicationNode({
+        kind: "javascript-module",
+        identity: {
+          strategy: "artifact-local-key",
+          stability: "artifact-version",
+          artifact_sha256: moduleShaFallback,
+          namespace: "webpack",
+          key: "same-module",
+        },
+        observations: [
+          {
+            label: "same-module",
+            properties: { source_sha256: source },
+            evidence: evidenceAt(start, end),
+          },
+        ],
+      });
+    const leftModule = nodeAt(0, 100);
+    const rightModule = nodeAt(500, 600);
+    const graphForModule = (node: typeof leftModule) =>
+      createJavaScriptApplicationGraph({
+        schema: "JavaScriptApplicationGraph",
+        root_node_ids: [node.node_id],
+        nodes: [node],
+        edges: [],
+        coverage: completeCoverage,
+        limitations: [],
+      });
+    const result = compareJavaScriptApplicationVersions({
+      left: {
+        evidenceId: `ev_${"1".repeat(64)}`,
+        rootArtifactSha256: LEFT_SHA,
+        graph: graphForModule(leftModule),
+      },
+      right: {
+        evidenceId: `ev_${"2".repeat(64)}`,
+        rootArtifactSha256: RIGHT_SHA,
+        graph: graphForModule(rightModule),
+      },
+      leftNativeEvidence: [],
+      rightNativeEvidence: [],
+    });
+    expect(result.matching.exact_module_source_digest).toBe(1);
+    const item = result.items.find(
+      ({ left_node_id: id }) => id === leftModule.node_id,
+    );
+    expect(item).toMatchObject({
+      status: "unchanged",
+      dimensions: ["location"],
+      match: { status: "matched", basis: "exact-module-source-digest" },
+    });
+    expect(result.summary).toMatchObject({ unchanged: 1, changed: 0 });
+  });
+});
+
 describe("application version comparison graph ownership", () => {
   it("returns a sealed change graph that passes complete validation", () => {
     const result = compare();
