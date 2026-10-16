@@ -6,6 +6,7 @@ export const CLI_COMMANDS = Object.freeze({
   decodeSignalRecording: "decode-signal-recording",
   compareWasmInterfaces: "compare-wasm-interfaces",
   inspectWasmArtifact: "inspect-wasm-artifact",
+  inspectApkSignature: "inspect-apk-signature",
   inspectSqliteDatabase: "inspect-sqlite-database",
   inspectEvmInterface: "inspect-evm-interface",
   inspectWebNetworkCapture: "inspect-web-network-capture",

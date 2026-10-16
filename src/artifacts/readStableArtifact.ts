@@ -14,6 +14,9 @@ export interface StableArtifactSnapshot {
   readonly sha256: string;
 }
 
+/** Positional read size; the whole file still lands in one buffer. */
+const READ_CHUNK_BYTES = 1024 * 1024;
+
 /** Filesystem boundary for stable reads, including deterministic replacement probes. */
 export interface StableArtifactFileSystem {
   lstat(path: string): Promise<BigIntStats>;
@@ -90,29 +93,41 @@ export const readStableArtifact = async (
           "integrity",
           `Artifact changed before open: ${path}`,
         );
-      const chunks: Buffer[] = [];
+      // One buffer of the admitted size, filled by positional reads: peak
+      // memory stays at the file size (a chunk list plus its concatenation
+      // was ~2.5x the input).
+      const expected = Number(initial.size);
+      if (expected > maximumBytes)
+        throw new ArtifactReaderFailure(
+          "limit",
+          `Selected artifact grew beyond its byte limit: ${path}`,
+          { boundary: "file-size" },
+        );
+      const content = Buffer.alloc(expected);
       let count = 0;
-      for await (const chunk of file.createReadStream({
-        autoClose: false,
-        highWaterMark: 65536,
-      })) {
+      while (count < expected) {
         assertArtifactReadActive(signal);
-        const value: unknown = chunk;
-        if (!Buffer.isBuffer(value))
-          throw new ArtifactReaderFailure(
-            "format",
-            `Artifact stream did not return bytes: ${path}`,
-          );
-        const bytes = value;
-        count += bytes.length;
-        if (count > maximumBytes)
-          throw new ArtifactReaderFailure(
-            "limit",
-            `Selected artifact grew beyond its byte limit: ${path}`,
-            { boundary: "file-size" },
-          );
-        chunks.push(bytes);
+        const { bytesRead } = await file.read(
+          content,
+          count,
+          Math.min(READ_CHUNK_BYTES, expected - count),
+          count,
+        );
+        if (bytesRead === 0) break; // shrank: the identity check below refuses it
+        count += bytesRead;
       }
+      // Bytes past the admitted size mean the file grew during the read.
+      const { bytesRead: extra } = await file.read(
+        Buffer.alloc(1),
+        0,
+        1,
+        count,
+      );
+      if (extra > 0)
+        throw new ArtifactReaderFailure(
+          "integrity",
+          `Artifact changed during read: ${path}`,
+        );
       const after = await file.stat({ bigint: true });
       const current = await afterValidation(path, "during read", () =>
         fileSystem.lstat(path),
@@ -134,7 +149,7 @@ export const readStableArtifact = async (
           `Artifact changed during read: ${path}`,
         );
       assertArtifactReadActive(signal);
-      const bytes = Buffer.concat(chunks, count);
+      const bytes = content;
       return {
         bytes,
         sha256: createHash("sha256").update(bytes).digest("hex"),

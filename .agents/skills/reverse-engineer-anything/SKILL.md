@@ -154,6 +154,12 @@ explicit path or endpoint and do not need it.
   Select JavaScript glue and candidate paths explicitly and preserve URL/path
   ambiguity. No implicit fetch or target execution; WAT is not original source.
   See the [WASM guide](https://github.com/morluto/rea/blob/main/docs/wasm-artifacts.md).
+- Explicit local Android APK (or ZIP/AAB) signing: `inspect_apk_signature`.
+  Reports which schemes are present (v1 JAR, v2, v3, v3.1), each signer's
+  certificate SHA-256 fingerprint, v3 key-rotation lineage, source stamp, and
+  whether each signed digest still matches the bytes (self-consistency). This
+  is identity and integrity, not a trust or authenticity verdict.
+  See the [APK signature guide](https://github.com/morluto/rea/blob/main/docs/apk-signature.md).
 - Explicit local EVM bytecode carrier: `inspect_evm_interface` with caller-selected
   `raw` or `hex` encoding. Preserve carrier/decoded digests and treat selectors,
   argument strings and mutability as inferred candidates; this performs no chain
