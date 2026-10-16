@@ -1,10 +1,73 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "plist";
+import { createPlistNumberProjection } from "./apple/plistNumbers.js";
 
 import { omitPrototypeKeys, parseXmlPropertyList } from "./propertyListKeys.js";
 
 const plist = (body: string) =>
   `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">${body}</plist>`;
+
+it.each([
+  ["1<![CDATA[.25]]>", 1.25],
+  ["<![CDATA[1.25]]>", 1.25],
+  ["-1<![CDATA[.25]]>e<![CDATA[1]]>", -12.5],
+  ["\r\n<![CDATA[\r\n1.25]]><!-- ignored -->", 1.25],
+  ["1<!-- ignored --><![CDATA[.25]]>", 1.25],
+  ["<![CDATA[-0]]>", -0],
+  ["<![CDATA[5e-324]]>", Number.MIN_VALUE],
+  ["<![CDATA[1.7976931348623157e308]]>", Number.MAX_VALUE],
+  ["<![CDATA[Infinity]]>", Infinity],
+  ["<![CDATA[-Infinity]]>", -Infinity],
+  ["<![CDATA[NaN]]>", NaN],
+  ["<![CDATA[]]>1.25", 1.25],
+  ["<![CDATA[1]]>&#46;25", 1.25],
+  ["<![CDATA[1&#46;25]]>", 1],
+] as const)("decodes real character data once: %s", (body, expected) => {
+  const result = parseXmlPropertyList(plist(`<real>${body}</real>`));
+  expect(result.value).toBe(expected);
+  expect(result.numberLiterals.incomplete).toBe(false);
+  expect(result.numberLiterals.reals.has(expected)).toBe(true);
+});
+
+it("keeps neighboring source text and prototype omissions when compacting reals", () => {
+  const parsed = parseXmlPropertyList(
+    plist(
+      '<dict><key>😀</key><string>a&#13;b</string><key>real</key><real note=">"> <![CDATA[1]]><!-- ignored -->&#46;25</real><key>__proto__</key><true/></dict>',
+    ),
+  );
+  expect(parsed.value).toEqual({ "😀": "a\rb", real: 1.25 });
+  expect(parsed.omittedPrototypeKeys).toBe(1);
+});
+
+it("retains ambiguity when a CDATA real collides with a rounded integer", () => {
+  const parsed = parseXmlPropertyList(
+    plist(
+      "<array><integer>9007199254740993</integer><real><![CDATA[9007199254740992]]></real></array>",
+    ),
+  );
+  const numbers = createPlistNumberProjection(parsed.numberLiterals);
+  expect(numbers.project([9007199254740992, 9007199254740992])).toEqual(
+    parsed.value,
+  );
+  expect(numbers.limitations()).toContainEqual(
+    expect.stringContaining("cannot be associated unambiguously"),
+  );
+});
+
+it("does not interpret markup inside opaque text or normalize nested real elements", () => {
+  const parsed = parseXmlPropertyList(
+    plist(
+      "<dict><key>literal</key><string><![CDATA[<real>9007199254740992</real>]]></string><key>value</key><real>1<string>nested</string><![CDATA[.25]]></real><key>__proto__</key><true/></dict>",
+    ),
+  );
+  expect(parsed.value).toEqual({
+    literal: "<real>9007199254740992</real>",
+    value: 1,
+  });
+  expect(parsed.numberLiterals.incomplete).toBe(true);
+  expect(parsed.numberLiterals.reals.size).toBe(0);
+  expect(parsed.omittedPrototypeKeys).toBe(1);
+});
 
 it.each([
   "<key>__proto__</key>",
@@ -23,6 +86,7 @@ it.each([
   expect(parsed).toEqual({
     value: { CFBundleExecutable: "App", list: [{ kept: 1 }] },
     omittedPrototypeKeys: 2,
+    numberLiterals: expect.any(Object),
   });
   expect(Object.getPrototypeOf(parsed.value)).toBe(Object.prototype);
 });
@@ -37,6 +101,7 @@ it("keeps __proto__ text in strings, comments, and similar keys", () => {
       __rea_prototype_key__: "__proto__",
     },
     omittedPrototypeKeys: 0,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -47,6 +112,7 @@ it("keeps an entity-encoded key that decodes to the placeholder", () => {
   expect(parseXmlPropertyList(text)).toEqual({
     value: { __rea_prototype_key__: "kept" },
     omittedPrototypeKeys: 1,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -57,6 +123,7 @@ it("keeps entity-like text beyond Unicode in comments and CDATA", () => {
   expect(parseXmlPropertyList(text)).toEqual({
     value: { raw: "&#x110000;" },
     omittedPrototypeKeys: 1,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -77,6 +144,7 @@ it("preserves the pinned decoder's first-child key semantics", () => {
   expect(parseXmlPropertyList(text)).toEqual({
     value: { __pro: "kept" },
     omittedPrototypeKeys: 1,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -92,10 +160,12 @@ it("preserves OpenStep dictionary and array autodetection", () => {
       __rea_prototype_key__: "kept",
     },
     omittedPrototypeKeys: 0,
+    numberLiterals: expect.any(Object),
   });
   expect(parseXmlPropertyList("(one, two)")).toEqual({
     value: ["one", "two"],
     omittedPrototypeKeys: 0,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -115,6 +185,7 @@ it("counts OpenStep __proto__ keys the decoder silently drops", () => {
       "137_proto__": "d",
     },
     omittedPrototypeKeys: 4,
+    numberLiterals: expect.any(Object),
   });
   const nested = (result.value as { nested: object }).nested;
   expect(Object.getPrototypeOf(nested)).toBe(Object.prototype);
@@ -130,6 +201,7 @@ it("counts OpenStep compound keys that coerce to __proto__", () => {
   ).toEqual({
     value: { "__pro,to__": "c", list: ["__proto__"] },
     omittedPrototypeKeys: 2,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -200,6 +272,7 @@ it("does not count markup inside comments, CDATA, or the doctype as nesting", ()
   expect(parseXmlPropertyList(text)).toEqual({
     value: { a: "<dict><array><dict>", b: ["x"] },
     omittedPrototypeKeys: 0,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -232,6 +305,7 @@ it("ignores complete DOCTYPE internal subsets when checking value depth", () => 
   expect(parseXmlPropertyList(text)).toEqual({
     value: "x",
     omittedPrototypeKeys: 0,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -255,6 +329,7 @@ it.each(["\n", "\r\n", "\r", "\u0085", "\u2028", "\u2029"])(
     expect(parseXmlPropertyList(text)).toEqual({
       value: { "kept\rkey": "a\rb\u0085c\u2028d" },
       omittedPrototypeKeys: 1,
+      numberLiterals: expect.any(Object),
     });
   },
 );
@@ -267,6 +342,7 @@ it("locates sparse omitted keys across newline-dense source", () => {
   expect(parseXmlPropertyList(text)).toEqual({
     value: { nested: { kept: true } },
     omittedPrototypeKeys: 2,
+    numberLiterals: expect.any(Object),
   });
 });
 
@@ -289,6 +365,7 @@ describe("OpenStep plist nesting preflight", () => {
       expect(parseXmlPropertyList(root + arrays(3000))).toEqual({
         value: root === "{}" ? {} : [],
         omittedPrototypeKeys: 0,
+        numberLiterals: expect.any(Object),
       });
     },
   );
@@ -307,6 +384,7 @@ describe("OpenStep plist nesting preflight", () => {
     expect(parseXmlPropertyList(text)).toEqual({
       value: parse(text),
       omittedPrototypeKeys: 0,
+      numberLiterals: expect.any(Object),
     });
   });
 
@@ -318,6 +396,7 @@ describe("OpenStep plist nesting preflight", () => {
     ).toEqual({
       value: { quote: '"( )', data: new Uint8Array([40, 41]), values: ["x"] },
       omittedPrototypeKeys: 0,
+      numberLiterals: expect.any(Object),
     });
   });
 });

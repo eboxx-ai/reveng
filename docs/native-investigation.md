@@ -323,6 +323,9 @@ complete observation.
   count because REA results cannot represent that key. XML tag whitespace and
   comments do not change that handling. Other values and the original archive
   digest are preserved; key interpretation follows the pinned plist decoder.
+  XML real values combine ordinary text and CDATA: `<real>1<![CDATA[.25]]></real>`
+  retains `1.25`. Numeric type metadata uses the same parsed character data;
+  an integer and real that round to the same number remain explicitly ambiguous.
 - `decode_interface_builder` / `rea decode-interface-builder <app>` reads
   compiled storyboard and nib resources into objects, outlets, actions,
   connections and controller/class names. A full app graph is often several

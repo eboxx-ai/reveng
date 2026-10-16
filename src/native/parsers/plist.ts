@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
+import type { PlistNumberLiterals } from "../../domain/apple/plistNumbers.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
 import {
   projectPlistValue,
@@ -136,9 +137,11 @@ export const parsePlistXml = (
 ): Result<ParsedPlist, AnalysisOutputError> => {
   let projected: ProjectedPlistValue;
   let omittedPrototypeKeys: number;
+  let literals: PlistNumberLiterals;
   try {
     const decoded = parseXmlPropertyList(output);
     omittedPrototypeKeys = decoded.omittedPrototypeKeys;
+    literals = decoded.numberLiterals;
     projected = projectPlistValue(decoded.value);
   } catch (cause: unknown) {
     return err(
@@ -151,7 +154,6 @@ export const parsePlistXml = (
   }
   // The XML decoder turns <integer> and <real> into numbers before REA sees
   // them, rounding integers beyond the exact range.
-  const literals = xmlNumberLiterals(output);
   let exactIntegerCount = 0;
   let ambiguousNumberCount = 0;
   const value = mapJsonNumbers(projected.value, (item) => {
@@ -159,6 +161,7 @@ export const parsePlistXml = (
     if (decimals === undefined) return item;
     const [decimal] = decimals;
     if (
+      literals.incomplete ||
       decimals.size !== 1 ||
       decimal === undefined ||
       literals.reals.has(item)

@@ -6,6 +6,11 @@ import {
 } from "@xmldom/xmldom";
 import { parse, parseOpenStep } from "plist";
 
+import {
+  createPlistNumberCollector,
+  type PlistNumberLiterals,
+} from "./apple/plistNumbers.js";
+
 import { MAX_PLIST_DEPTH } from "./apple/plistValue.js";
 
 /** The dictionary key REA results cannot carry: validation strips it. */
@@ -54,45 +59,19 @@ export const omitPrototypeKeys = (
   value: unknown,
 ): PropertyListWithoutPrototypeKeys => withoutKey(value, PROTOTYPE_KEY);
 
-const XML_ENTITIES: Readonly<Record<string, string>> = {
-  amp: "&",
-  apos: "'",
-  gt: ">",
-  lt: "<",
-  quot: '"',
-};
-
-/**
- * Expand XML character and predefined entity references. A reference beyond
- * Unicode stays as written: comments and CDATA may hold such text literally,
- * and the XML decoder rejects it anywhere else.
- */
-export const decodeXmlText = (text: string): string =>
-  text.replace(
-    /&(?:#x([\da-f]+)|#(\d+)|([a-z]+));/giu,
-    (entity, hex?: string, decimal?: string, name?: string) => {
-      const codePoint =
-        hex !== undefined
-          ? parseInt(hex, 16)
-          : decimal !== undefined
-            ? parseInt(decimal, 10)
-            : undefined;
-      if (codePoint !== undefined)
-        return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
-      return (name === undefined ? undefined : XML_ENTITIES[name]) ?? entity;
-    },
-  );
-
 /**
  * Decode an XML plist whose dictionaries may use the legal key `__proto__`,
  * which the `plist` decoder rejects outright. Those entries are omitted and
  * counted so callers can report them instead of failing the whole document.
+ * Real character data and number metadata share the same parsed XML facts.
  */
 export const parseXmlPropertyList = (
   text: string,
-): PropertyListWithoutPrototypeKeys => {
+): PropertyListWithoutPrototypeKeys & {
+  readonly numberLiterals: PlistNumberLiterals;
+} => {
   // Preserve the pinned decoder's existing OpenStep autodetection, also used
-  // by app Info.plist resolution. Only XML needs the key-element substitution.
+  // by app Info.plist resolution. Only XML needs decoder normalization.
   const first = text.trimStart()[0];
   if (first === "{" || first === "(") {
     // The pinned decoder assigns a `__proto__` key to the object prototype, so
@@ -102,22 +81,20 @@ export const parseXmlPropertyList = (
     return {
       value: omitPrototypeKeys(parse(text)).value,
       omittedPrototypeKeys: prototypeKeys,
+      numberLiterals: createPlistNumberCollector().result(),
     };
   }
-  // Normalize only the literal line endings the pinned decoder normalizes.
-  // Preserve character references in the source: serializing a DOM would turn
-  // e.g. an encoded carriage return into a literal newline on the second parse.
+  // Preserve character references: serializing the DOM would normalize them again.
   const normalized = normalizeLineEndings(text);
-  // The pinned XML parser is iterative. Reuse its document for the depth
-  // preflight and key lookup so quoted attributes and declarations have the
-  // same meaning at both boundaries, before plist's recursive value decode.
   const document = new DOMParser().parseFromString(normalized, "text/xml");
-  assertXmlPlistDepthWithinLimit(document);
-  const { substituted, placeholder } = substitutePrototypeKeys(
+  const { numberLiterals, realSubstitutions } =
+    inspectXmlPropertyList(document);
+  const { substituted, placeholder } = normalizeXmlDecoderInput(
     normalized,
     document,
+    realSubstitutions,
   );
-  return withoutKey(parse(substituted), placeholder);
+  return { ...withoutKey(parse(substituted), placeholder), numberLiterals };
 };
 
 interface OpenStepContainer {
@@ -284,6 +261,12 @@ const skipOpenStepScalar = (text: string, start: number): number => {
 /** Elements whose children the pinned plist value decoder visits recursively. */
 const PLIST_CONTAINER_ELEMENTS = new Set(["plist", "dict", "array"]);
 
+interface XmlValueSubstitution {
+  readonly node: Node;
+  readonly replacement: string;
+  readonly kind: "insert" | "text" | "cdata";
+}
+
 /**
  * Reject XML plists nested deeper than the projection supports before any
  * recursive value pass runs. `plist` and the prototype-key traversal recurse once
@@ -297,12 +280,12 @@ const PLIST_CONTAINER_ELEMENTS = new Set(["plist", "dict", "array"]);
  * its own level. The outer plist envelope is unwrapped by the decoder;
  * nested plist elements decode as arrays and must count toward the bound.
  */
-const assertXmlPlistDepthWithinLimit = (document: Document): void => {
+const inspectXmlPropertyList = (document: Document) => {
+  const numbers = createPlistNumberCollector();
+  const realSubstitutions: XmlValueSubstitution[] = [];
   const root = document.documentElement;
-  if (root === null) return;
-  const pending: Array<{ node: Node; depth: number }> = [
-    { node: root, depth: -1 },
-  ];
+  const pending: Array<{ node: Node; depth: number }> =
+    root === null ? [] : [{ node: root, depth: -1 }];
   while (pending.length > 0) {
     const entry = pending.pop();
     if (entry === undefined) break;
@@ -316,22 +299,92 @@ const assertXmlPlistDepthWithinLimit = (document: Document): void => {
       throw new RangeError(
         `Plist exceeds ${String(MAX_PLIST_DEPTH)} nesting levels`,
       );
+    if (node.nodeName === "integer") {
+      const child = node.firstChild;
+      if (child?.nodeType === node.TEXT_NODE && child.nextSibling === null)
+        numbers.integer((child.nodeValue ?? "").trim());
+      else numbers.markIncomplete();
+    } else if (node.nodeName === "real") {
+      let text = "";
+      let complete = true;
+      let hasCdata = false;
+      for (
+        let child = node.firstChild;
+        child !== null;
+        child = child.nextSibling
+      ) {
+        if (
+          child.nodeType === node.TEXT_NODE ||
+          child.nodeType === node.CDATA_SECTION_NODE
+        ) {
+          text += child.nodeValue ?? "";
+          if (child.nodeType === node.CDATA_SECTION_NODE) hasCdata = true;
+        } else if (child.nodeType !== node.COMMENT_NODE) complete = false;
+      }
+      if (complete) {
+        const value = Number.parseFloat(text);
+        numbers.real(value);
+        // A double's exponential spelling is at most 24 ASCII characters and
+        // round-trips without XML escaping. Discard the original character data.
+        if (hasCdata) {
+          let replacement = Object.is(value, -0) ? "-0" : value.toExponential();
+          for (
+            let child = node.firstChild;
+            child !== null;
+            child = child.nextSibling
+          ) {
+            if (
+              child.nodeType !== node.TEXT_NODE &&
+              child.nodeType !== node.CDATA_SECTION_NODE
+            )
+              continue;
+            realSubstitutions.push({
+              node: child,
+              replacement,
+              kind:
+                child.nodeType === node.CDATA_SECTION_NODE ? "cdata" : "text",
+            });
+            replacement = "";
+          }
+        }
+      } else numbers.markIncomplete();
+    }
     if (PLIST_CONTAINER_ELEMENTS.has(node.nodeName) && node.firstChild !== null)
       pending.push({ node: node.firstChild, depth: depth + 1 });
   }
+  return { numberLiterals: numbers.result(), realSubstitutions };
 };
 
-/** Locate keys with the same XML parser and first-child semantics as plist. */
-const substitutePrototypeKeys = (text: string, document: Document) => {
+/** Normalize decoder divergences at their XML-owned source locations. */
+const normalizeXmlDecoderInput = (
+  text: string,
+  document: Document,
+  realSubstitutions: readonly XmlValueSubstitution[],
+) => {
   const keys = Array.from(document.getElementsByTagName("key"));
   const decodedKeys = new Set(keys.map((key) => key.firstChild?.nodeValue));
   let placeholder = "__rea_prototype_key__";
   while (decodedKeys.has(placeholder)) placeholder = `_${placeholder}`;
 
-  const omitted = keys
-    .map((key) => key.firstChild)
-    .filter((node) => node?.nodeValue === PROTOTYPE_KEY);
-  if (omitted.length === 0) return { substituted: text, placeholder };
+  const substitutions = [
+    ...keys.flatMap((key) =>
+      key.firstChild?.nodeValue === PROTOTYPE_KEY
+        ? [
+            {
+              node: key.firstChild,
+              replacement: `<![CDATA[${placeholder}]]>`,
+              kind: "insert" as const,
+            },
+          ]
+        : [],
+    ),
+    ...realSubstitutions,
+  ].sort(
+    (a, b) =>
+      (a.node.lineNumber ?? 0) - (b.node.lineNumber ?? 0) ||
+      (a.node.columnNumber ?? 0) - (b.node.columnNumber ?? 0),
+  );
+  if (substitutions.length === 0) return { substituted: text, placeholder };
 
   // xmldom uses one-based locators in document order. Scan forward only to
   // needed lines instead of retaining an offset for every source newline.
@@ -339,21 +392,33 @@ const substitutePrototypeKeys = (text: string, document: Document) => {
   let lineStart = 0;
   const parts: string[] = [];
   let cursor = 0;
-  for (const node of omitted) {
-    const nodeLine = node?.lineNumber;
-    const column = node?.columnNumber;
+  for (const { node, replacement, kind } of substitutions) {
+    const nodeLine = node.lineNumber;
+    const column = node.columnNumber;
     if (nodeLine === undefined || column === undefined)
-      throw new TypeError("XML plist key has no source location");
+      throw new TypeError("XML plist value has no source location");
     while (line < nodeLine) {
       const newline = text.indexOf("\n", lineStart);
       if (newline === -1)
-        throw new TypeError("XML plist key has an invalid source location");
+        throw new TypeError("XML plist value has an invalid source location");
       lineStart = newline + 1;
       line += 1;
     }
     const offset = lineStart + column - 1;
-    parts.push(text.slice(cursor, offset), `<![CDATA[${placeholder}]]>`);
+    parts.push(text.slice(cursor, offset), replacement);
     cursor = offset;
+    if (kind === "cdata") {
+      const end = text.indexOf("]]>", offset + 9);
+      if (!text.startsWith("<![CDATA[", offset) || end < 0)
+        throw new TypeError("XML plist CDATA has an invalid source location");
+      cursor = end + 3;
+    } else if (kind === "text") {
+      // This DOM-owned text ends at the next XML token. Character references
+      // contain no literal '<', and comments remain outside the replaced span.
+      cursor = text.indexOf("<", offset);
+      if (cursor < 0)
+        throw new TypeError("XML plist text has an invalid source location");
+    }
   }
   parts.push(text.slice(cursor));
   return { substituted: parts.join(""), placeholder };

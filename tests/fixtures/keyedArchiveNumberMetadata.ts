@@ -14,8 +14,6 @@ const ROUNDED = 9007199254740992;
 
 /** Accepted decoder representations whose supplemental metadata needs care. */
 export const mixedArchiveNumberElements = [
-  "<real>9007199254740992<![CDATA[0]]></real>",
-  "<real><![CDATA[1]]>9007199254740992</real>",
   "<integer>9007199254740992<!-- split -->3</integer>",
   "<integer>9007199254740992<![CDATA[3]]></integer>",
   "<integer><![CDATA[9007199254740992]]>3</integer>",
@@ -33,6 +31,19 @@ export const archiveNumberMetadataCases = [
     element,
     expected: { first: ROUNDED, other: ROUNDED },
     incomplete: true,
+    malformedReference: false,
+  })),
+  ...(
+    [
+      ["<real>9007199254740992<![CDATA[0]]></real>", 90071992547409920],
+      ["<real><![CDATA[1]]>9007199254740992</real>", 19007199254740992],
+    ] as const
+  ).map(([element, other]) => ({
+    name: element,
+    source: { first: "__INTEGER__", other: "__OTHER__" },
+    element,
+    expected: { first: EXACT_INTEGER, other },
+    incomplete: false,
     malformedReference: false,
   })),
   ...(["UID", "CF$UID"] as const).flatMap((key) => [

@@ -111,9 +111,9 @@ it("keeps integral XML reals beyond the safe range as reals", () => {
   ]);
 });
 
-it("reports XML numbers whose integer or real origin is ambiguous", () => {
+it("reports XML integer/real ambiguity even when the real uses CDATA", () => {
   const parsed = parsePlistXml(
-    "<plist><array><integer>9007199254740993</integer><real>9007199254740992</real><data>AA==</data></array></plist>",
+    "<plist><array><integer>9007199254740993</integer><real><![CDATA[9007199254740992]]></real><data>AA==</data></array></plist>",
   );
   if (!parsed.ok) throw new Error("expected plist XML to parse");
   expect(parsed.value.value).toEqual([
