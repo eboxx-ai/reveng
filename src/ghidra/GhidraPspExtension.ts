@@ -256,12 +256,7 @@ export const resolveGhidraPspExtension = async (
     )
       return err(
         new AnalysisCancelledError("resolve_analysis_profile", {
-          cause:
-            primary instanceof RegularFileCancelled
-              ? primary.reason
-              : cause instanceof RegularFileCancelled
-                ? cause.reason
-                : primary,
+          cause: cause instanceof RegularFileCancelled ? cause.reason : cause,
           ...(cleanup === undefined ? {} : { cleanup }),
         }),
       );

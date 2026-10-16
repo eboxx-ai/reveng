@@ -18,6 +18,7 @@ import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
 } from "../domain/analysisErrorCore.js";
+import type { Result } from "../domain/result.js";
 
 const setupExtension = async (root: string, version = "12.1.3") => {
   const files: Record<string, string> = {
@@ -269,6 +270,61 @@ describe("resolveGhidraPspExtension", () => {
 });
 
 describe("resolveGhidraPspExtension cancellation and cleanup", () => {
+  it("retains the descriptor owner in error cause when cancelled during read without retention callback", async () => {
+    const directory = await createTestTempDirectory("rea-psp-test-");
+    const root = join(directory, "Ghidra", "Extensions", "ghidra-allegrex");
+    await setupExtension(root, "12.1.3");
+    const installation = makeAvailableInstallation(directory);
+
+    const controller = new AbortController();
+    const closeError = new Error("Descriptor leak on close");
+    let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    const realOpen = regularFileModule.openRegularFile;
+    const openSpy = vi
+      .spyOn(regularFileModule, "openRegularFile")
+      .mockImplementation(async (path, opts) => {
+        const handle = await realOpen(path, opts);
+        if (path.endsWith("allegrex.sla")) {
+          vi.spyOn(handle, "read").mockImplementation(async () => {
+            controller.abort(new Error("User cancellation during read"));
+            throw controller.signal.reason;
+          });
+          closeSpy = vi.spyOn(handle, "close").mockRejectedValue(closeError);
+        }
+        return handle;
+      });
+
+    let result: Result<unknown, unknown> | undefined;
+    try {
+      result = await resolveGhidraPspExtension(installation, controller.signal);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("Expected failure");
+      expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+      const cancelError = result.error as AnalysisCancelledError;
+      expect(cancelError.operation).toBe("resolve_analysis_profile");
+      expect(cancelError.cleanup).toBeDefined();
+      expect(cancelError.cleanup?.resources[0]).toContain("allegrex.sla");
+
+      // Verify the cleanup wrapper is preserved as cause, keeping the owner
+      expect(cancelError.cause).toBeInstanceOf(RegularFileCleanupFailure);
+      const cleanupFailure = cancelError.cause as RegularFileCleanupFailure;
+      expect(cleanupFailure.owner).toBeDefined();
+      expect(cleanupFailure.cleanupCause).toBe(closeError);
+    } finally {
+      openSpy.mockRestore();
+      closeSpy?.mockRestore();
+      if (
+        result?.ok === false &&
+        result.error instanceof AnalysisCancelledError &&
+        result.error.cause instanceof RegularFileCleanupFailure
+      ) {
+        await result.error.cause.owner.close().catch(() => {});
+      }
+    }
+  });
+
   it("returns AnalysisCancelledError with cleanup metadata when cancellation interrupts read and close also fails", async () => {
     const directory = await createTestTempDirectory("rea-psp-test-");
     const root = join(directory, "Ghidra", "Extensions", "ghidra-allegrex");
