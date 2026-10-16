@@ -501,6 +501,115 @@ describe("malformed Objective-C property records", () => {
   );
 });
 
+describe("malformed Objective-C ivar records", () => {
+  it.each(["valid", "empty", "unmapped", "invalid-utf8"] as const)(
+    "retains sibling ivars and class facets when a middle ivar name is %s",
+    (nameKind) => {
+      const bytes = fixture();
+      // Keep the complete class fixture and add an independent sibling class.
+      bytes.writeUInt32LE(2, 0x300);
+      bytes.writeUInt32LE(3, 0x380);
+      bytes.writeBigUInt64LE(16n, 144);
+      bytes.writeBigUInt64LE(base + 0xd00n, 0x188);
+      bytes.writeBigUInt64LE(base + 0xd40n, 0xd20);
+      bytes.writeUInt32LE(2, 0xd40);
+      bytes.writeBigUInt64LE(base + 0xda0n, 0xd58);
+      bytes.write("Sibling\0", 0xda0);
+      // Three fixed-stride entries: valid, possibly malformed, valid.
+      bytes.writeBigUInt64LE(base + 0xa00n, 0x330);
+      bytes.writeUInt32LE(32, 0xa00);
+      bytes.writeUInt32LE(3, 0xa04);
+      for (const entry of [0xa08, 0xa28, 0xa48])
+        bytes.copy(bytes, entry, 0x508, 0x528);
+      bytes.writeBigUInt64LE(base + 0xb00n, 0xa30);
+      bytes.writeBigUInt64LE(base + 0xb20n, 0xa50);
+      bytes.write("middle\0", 0xb00);
+      bytes.write("later\0", 0xb20);
+      const baseline = decodeAppleDispatchMetadata(bytes, 100, provenance);
+      if (nameKind === "empty") bytes[0xb00] = 0;
+      if (nameKind === "unmapped")
+        bytes.writeBigUInt64LE(base + 0x5000n, 0xa30);
+      if (nameKind === "invalid-utf8") bytes[0xb00] = 0xff;
+
+      const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
+      const valid = nameKind === "valid";
+      expect(result.objc_classes).toEqual(baseline.objc_classes);
+      expect(result.objc_classes.map(({ name }) => name)).toEqual([
+        "Fixture",
+        "Fixture",
+        "Sibling",
+      ]);
+      expect(result.objc_classes[0]).toMatchObject({
+        ivar_count: 3,
+        methods: [{ selector: "performAction:" }],
+        properties: [
+          { name: "atomicValue" },
+          { name: "nonatomicValue" },
+          { name: "unknownValue" },
+        ],
+        protocols: ["FixtureProtocol"],
+      });
+      expect(result.objc_dispatch_implementations).toEqual(
+        baseline.objc_dispatch_implementations,
+      );
+      expect(result.objc_protocols).toEqual(baseline.objc_protocols);
+      expect(result.objc_protocol_records).toEqual(
+        baseline.objc_protocol_records,
+      );
+      expect(result.objc_ivars).toEqual(
+        baseline.objc_ivars.filter(({ name }) => valid || name !== "middle"),
+      );
+      expect(result.objc_ivars.map(({ name }) => name)).toEqual(
+        valid ? ["state", "middle", "later"] : ["state", "later"],
+      );
+      const coverage = result.coverage.find(
+        ({ facet }) => facet === "objc_class_method_ivar_metadata",
+      );
+      expect(coverage).toMatchObject({
+        status: valid ? "complete" : "partial",
+        examined: 2,
+        decoded: 3,
+        reason: valid
+          ? null
+          : expect.stringContaining("Ivar 0x100000a28 of Fixture:"),
+      });
+      if (nameKind === "empty")
+        expect(coverage?.reason).toContain("has an empty name");
+      expect(
+        result.coverage.find(
+          ({ facet }) => facet === "objc_properties_categories",
+        ),
+      ).toMatchObject({ status: "complete" });
+    },
+  );
+
+  it.each([3, 4])(
+    "charges a malformed ivar once with a budget of %i",
+    (budget) => {
+      const bytes = partialSiblingsFixture();
+      bytes.writeBigUInt64LE(base + 0x700n, 0x570);
+      bytes.writeUInt32LE(32, 0x700);
+      bytes.writeUInt32LE(1, 0x704);
+      bytes.writeBigUInt64LE(base + 0x800n, 0x710);
+      const result = decodeAppleDispatchMetadata(bytes, budget, provenance);
+      expect(result.objc_classes.map(({ name }) => name)).toEqual(
+        budget === 4
+          ? ["KeptClass", "OtherClass", "LaterClass"]
+          : ["KeptClass", "OtherClass"],
+      );
+      expect(result.objc_ivars).toEqual([]);
+      const coverage = result.coverage.find(
+        ({ facet }) => facet === "objc_class_method_ivar_metadata",
+      );
+      expect(coverage).toMatchObject({ status: "partial" });
+      expect(coverage?.reason).toContain("has an empty name");
+      expect(coverage?.reason?.includes("max_records_reached")).toBe(
+        budget === 3,
+      );
+    },
+  );
+});
+
 describe("malformed Apple dispatch metadata", () => {
   it("retains valid class siblings when one class has an empty name", () => {
     const result = decodeAppleDispatchMetadata(

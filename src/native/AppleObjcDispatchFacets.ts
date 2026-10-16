@@ -283,39 +283,55 @@ export const decodeObjcDispatchFacets = (input: {
       for (let index = 0; index < count; index++) {
         if (!budget.admit()) break;
         const entry = ivarList + 8n + BigInt(index * stride);
-        const encodedOffset = read.pointer(entry);
-        let value: number | null = null;
         try {
-          value = read.u32(encodedOffset);
+          const ivarName = read.string(read.pointer(entry + 8n));
+          if (ivarName.length === 0)
+            throw new TypeError(
+              `Objective-C ivar at ${hex(entry)} has an empty name`,
+            );
+          const encodedOffset = read.pointer(entry);
+          let value: number | null = null;
+          try {
+            value = read.u32(encodedOffset);
+          } catch (cause: unknown) {
+            // Unresolved offsets are recorded; the cause adds no identity.
+            void cause;
+            failures.push(
+              `Unresolved ivar offset pointer ${hex(encodedOffset)}`,
+            );
+          }
+          const alignment = read.u32(entry + 24n);
+          result.objc_ivars.push({
+            class_name: name,
+            name: ivarName,
+            type_encoding: read.string(read.pointer(entry + 16n)),
+            offset: value,
+            size: read.u32(entry + 28n),
+            // objc4 ivar_t::alignment(): ~0 means word alignment (8 for 32-byte entries).
+            alignment:
+              alignment === 0xffffffff
+                ? 8
+                : alignment < 31
+                  ? 2 ** alignment
+                  : null,
+            location: read.location(entry),
+            decode:
+              value === null
+                ? {
+                    status: "partial",
+                    reason: "ivar_offset_pointer_unresolved",
+                  }
+                : decoded,
+            evidence: read.evidence(
+              entry,
+              "Objective-C ivar entry and encoded offset storage",
+            ),
+          });
         } catch (cause: unknown) {
-          // Unresolved offsets are recorded; the cause adds no identity.
-          void cause;
-          failures.push(`Unresolved ivar offset pointer ${hex(encodedOffset)}`);
+          failures.push(
+            `Ivar ${hex(entry)} of ${name}: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
         }
-        const alignment = read.u32(entry + 24n);
-        result.objc_ivars.push({
-          class_name: name,
-          name: read.string(read.pointer(entry + 8n)),
-          type_encoding: read.string(read.pointer(entry + 16n)),
-          offset: value,
-          size: read.u32(entry + 28n),
-          // objc4 ivar_t::alignment(): ~0 means word alignment (8 for 32-byte entries).
-          alignment:
-            alignment === 0xffffffff
-              ? 8
-              : alignment < 31
-                ? 2 ** alignment
-                : null,
-          location: read.location(entry),
-          decode:
-            value === null
-              ? { status: "partial", reason: "ivar_offset_pointer_unresolved" }
-              : decoded,
-          evidence: read.evidence(
-            entry,
-            "Objective-C ivar entry and encoded offset storage",
-          ),
-        });
       }
     }
     methods(read.pointer(ro + 32n), name, meta ? "class" : "instance");
