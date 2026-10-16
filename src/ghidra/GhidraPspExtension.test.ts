@@ -222,9 +222,13 @@ describe("resolveGhidraPspExtension", () => {
       .spyOn(regularFileModule, "openRegularFile")
       .mockImplementation(async (path, opts) => {
         const handle = await realOpen(path, opts);
-        // Abort signal concurrently/post failure
-        controller.abort(new Error("Late abort"));
-        throw new Error("Simulated producer read failure");
+        try {
+          // Abort signal concurrently/post failure
+          controller.abort(new Error("Late abort"));
+          throw new Error("Simulated producer read failure");
+        } finally {
+          await handle.close();
+        }
       });
 
     try {
@@ -261,5 +265,58 @@ describe("resolveGhidraPspExtension", () => {
     expect((result.error as AnalysisCancelledError).operation).toBe(
       "resolve_analysis_profile",
     );
+  });
+});
+
+describe("resolveGhidraPspExtension cancellation and cleanup", () => {
+  it("returns AnalysisCancelledError with cleanup metadata when cancellation interrupts read and close also fails", async () => {
+    const directory = await createTestTempDirectory("rea-psp-test-");
+    const root = join(directory, "Ghidra", "Extensions", "ghidra-allegrex");
+    await setupExtension(root, "12.1.3");
+    const installation = makeAvailableInstallation(directory);
+
+    const controller = new AbortController();
+    const closeError = new Error("Descriptor leak on close");
+    let retainedOwner: OwnedFileHandle | undefined;
+    let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    const realOpen = regularFileModule.openRegularFile;
+    const openSpy = vi
+      .spyOn(regularFileModule, "openRegularFile")
+      .mockImplementation(async (path, opts) => {
+        const handle = await realOpen(path, opts);
+        if (path.endsWith("allegrex.sla")) {
+          vi.spyOn(handle, "read").mockImplementation(async () => {
+            controller.abort(new Error("User cancellation during read"));
+            throw controller.signal.reason;
+          });
+          closeSpy = vi.spyOn(handle, "close").mockRejectedValue(closeError);
+        }
+        return handle;
+      });
+
+    try {
+      const result = await resolveGhidraPspExtension(installation, {
+        signal: controller.signal,
+        retainFailedClose: (owner) => {
+          retainedOwner = owner;
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("Expected failure");
+      expect(result.error).toBeInstanceOf(AnalysisCancelledError);
+      const cancelError = result.error as AnalysisCancelledError;
+      expect(cancelError.operation).toBe("resolve_analysis_profile");
+      expect(cancelError.cleanup).toBeDefined();
+      expect(cancelError.cleanup?.resources[0]).toContain("allegrex.sla");
+      expect(retainedOwner).toBeDefined();
+    } finally {
+      openSpy.mockRestore();
+      closeSpy?.mockRestore();
+      if (retainedOwner !== undefined) {
+        await retainedOwner.close().catch(() => {});
+      }
+    }
   });
 });

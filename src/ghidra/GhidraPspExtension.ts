@@ -238,18 +238,11 @@ export const resolveGhidraPspExtension = async (
       ),
     );
   } catch (cause: unknown) {
-    if (isPspExtensionCancellation(cause, signal))
-      return err(
-        new AnalysisCancelledError("resolve_analysis_profile", {
-          cause: cause instanceof RegularFileCancelled ? cause.reason : cause,
-        }),
-      );
     const primary =
       cause instanceof RegularFileCleanupFailure &&
       cause.outcome.kind === "failed"
         ? cause.outcome.cause
         : cause;
-    const reason = `PSP_EXTENSION_UNAVAILABLE: ${primary instanceof Error ? primary.message : String(primary)} Use a compatible caller-installed ghidra-allegrex under GHIDRA_INSTALL_DIR/Ghidra/Extensions; REA does not install it.`;
     const cleanup =
       cause instanceof RegularFileCleanupFailure
         ? {
@@ -257,6 +250,22 @@ export const resolveGhidraPspExtension = async (
             resources: [cause.path],
           }
         : undefined;
+    if (
+      isPspExtensionCancellation(primary, signal) ||
+      isPspExtensionCancellation(cause, signal)
+    )
+      return err(
+        new AnalysisCancelledError("resolve_analysis_profile", {
+          cause:
+            primary instanceof RegularFileCancelled
+              ? primary.reason
+              : cause instanceof RegularFileCancelled
+                ? cause.reason
+                : primary,
+          ...(cleanup === undefined ? {} : { cleanup }),
+        }),
+      );
+    const reason = `PSP_EXTENSION_UNAVAILABLE: ${primary instanceof Error ? primary.message : String(primary)} Use a compatible caller-installed ghidra-allegrex under GHIDRA_INSTALL_DIR/Ghidra/Extensions; REA does not install it.`;
     return err(
       new AnalysisCapabilityUnavailableError(
         "ghidra",
