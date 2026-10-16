@@ -74,4 +74,48 @@ describe("ObjC/Swift metadata", () => {
       }),
     );
   });
+
+  it("omits unlocated Swift symbols instead of failing the inspection", () => {
+    const result = inspectNativeDispatchMetadata([
+      { address: "ram:0x1000", name: "OBJC_CLASS_$_StoreController" },
+      { address: "ram:0x2000", name: "-[StoreController buildTapped:]" },
+      { address: "", name: "$s4Test7MyClassC" },
+      { address: "", name: "_TtC4Test7MyClassC" },
+      { address: "ram:0x3000", name: "$s5Store7launchyyF" },
+    ]);
+
+    expect(result.swift_symbols.map((entry) => entry.mangled_name)).toEqual([
+      "$s5Store7launchyyF",
+    ]);
+    expect(result.objc_classes.map((entry) => entry.name)).toEqual([
+      "StoreController",
+    ]);
+    expect(result.objc_dispatch_implementations).toHaveLength(1);
+    expect(result.coverage).toContainEqual(
+      expect.objectContaining({
+        facet: "swift_declarations",
+        status: "partial",
+        examined: 3,
+        decoded: 0,
+      }),
+    );
+  });
+
+  it("succeeds with empty swift_symbols when no Swift symbol is located", () => {
+    const result = inspectNativeDispatchMetadata([
+      { address: "", name: "$s4Test7MyClassC" },
+      { address: "", name: "_TtC4Test7MyClassC" },
+    ]);
+
+    expect(result.swift_symbols).toEqual([]);
+    expect(result.coverage).toContainEqual(
+      expect.objectContaining({
+        facet: "swift_declarations",
+        status: "partial",
+        reason: expect.stringContaining("unlocated_swift_symbols_omitted"),
+        examined: 2,
+        decoded: 0,
+      }),
+    );
+  });
 });

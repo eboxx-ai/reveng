@@ -345,6 +345,7 @@ export const inspectNativeDispatchMetadata = (
   const classNames = new Set<string>();
   const implementations = new Map<string, ObjcDispatchImplementation>();
   const swiftSymbols: SwiftSymbol[] = [];
+  let examinedSwiftSymbols = 0;
 
   const examinedNames = names.slice(0, maxRecords);
   for (const entry of examinedNames) {
@@ -369,13 +370,19 @@ export const inspectNativeDispatchMetadata = (
       classNames.add(methodMatch[2]);
     }
 
-    if (isSwiftMangledSymbolName(entry.name) || entry.name.startsWith("_Tt"))
-      swiftSymbols.push({
-        mangled_name: entry.name,
-        address: entry.address,
-        decode: { status: "partial", reason: "mangled_symbol_not_demangled" },
-        evidence: symbolEvidence(entry.name, entry.address),
-      });
+    if (isSwiftMangledSymbolName(entry.name) || entry.name.startsWith("_Tt")) {
+      examinedSwiftSymbols += 1;
+      // An unlocated symbol has no address evidence to anchor; the published
+      // swift_symbols contract requires one, so omit it instead of failing
+      // the whole inspection.
+      if (entry.address !== "")
+        swiftSymbols.push({
+          mangled_name: entry.name,
+          address: entry.address,
+          decode: { status: "partial", reason: "mangled_symbol_not_demangled" },
+          evidence: symbolEvidence(entry.name, entry.address),
+        });
+    }
   }
 
   const methodsByClass = new Map<string, ObjcMethod[]>();
@@ -408,7 +415,7 @@ export const inspectNativeDispatchMetadata = (
         compositeKey([right.class_name, right.selector]),
       ),
   );
-  const swift = swiftSymbols.length > 0;
+  const swift = examinedSwiftSymbols > 0;
 
   return objcSwiftMetadataSchema.parse({
     objc_classes: classes,
@@ -448,9 +455,11 @@ export const inspectNativeDispatchMetadata = (
         facet: "swift_declarations",
         status: swift ? "partial" : "unsupported",
         reason: swift
-          ? "symbols_are_not_demangled_declarations"
+          ? examinedSwiftSymbols > swiftSymbols.length
+            ? "unlocated_swift_symbols_omitted_and_names_are_not_demangled"
+            : "symbols_are_not_demangled_declarations"
           : "no_swift_symbols_observed",
-        examined: swiftSymbols.length,
+        examined: examinedSwiftSymbols,
         decoded: 0,
       },
       {
