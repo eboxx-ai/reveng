@@ -184,6 +184,11 @@ export const projectElectronActiveCapture = (
     coverage: createCoverage(hookSnapshot, observations),
     limitations: [
       "IPC payloads are represented by value shapes; payload values are never retained.",
+      ...(observations.observedEventFamilies.includes("ipc-observation-gap")
+        ? [
+            "IPC dispatches with custom apply metadata have unobserved callback arguments and execution. Available ipc-observation-gap timeline records retain the registered channel; dropped gap records are counted by retention.",
+          ]
+        : []),
       "IPC direction and sender/receiver identifiers are observed only where Electron exposes them at the hooked boundary.",
       "The runtime timeline records lifecycle, navigation, shell, permission, popup, download, protocol, preload, native-addon, process, and IPC events; activity before hook installation is unavailable.",
       "The preload and renderer process contexts are not instrumented by the main-process -r hook; preload configuration and contextBridge API-shape events are main-boundary observations, not proof of renderer-side execution.",

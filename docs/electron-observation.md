@@ -127,6 +127,33 @@ If cleanup cannot be verified, the error retains collected observations in
 `details.partial_observation` and marks their application cleanup `unverified`.
 Cleanup uncertainty does not authorize signaling unrelated processes.
 
+Main-process IPC recording keeps original-function removal for `on` and `once`
+registrations and records a fired `once` callback once. Native Node.js owns
+removal order and traversal, including listeners registered by removal observers;
+the hook translates only its own recording wrappers at the removal boundary.
+Wrapper metadata uses weak keys and does not retain removed registrations.
+
+An `on` listener's application-defined `.apply` receives the original argument-list
+object unchanged. Borrowing the exposed method preserves its dynamic receiver.
+Because that method owns argument interpretation and may not
+invoke the callback, the hook records a bounded `ipc-observation-gap` timeline
+entry with the registered channel rather than an IPC invocation. Its empty
+`argument_shapes` means unobserved arguments, not a zero-argument callback;
+callback execution and result remain unknown. Coverage and retention include
+these gaps even when their individual records are dropped. Normal native
+dispatch continues to record actual invocation frames. Evidence snapshots copy
+retained arrays and counters without invoking application iterators or Array
+species.
+
+This does not establish complete JavaScript function introspection equivalence.
+Caller-defined `.listener` properties can change the identity exposed by
+`listeners()` and meta-events; accessors and Proxy metadata are not followed for
+wrapper recognition. Re-registering a raw recording wrapper on another channel
+retains the original registration's channel attribution.
+Mutating `.listener` on a raw recording wrapper can also prevent removal through
+application decorators; the reproduced identity conflict is tracked in
+[#4513](https://github.com/morluto/rea/issues/4513).
+
 ### Target fuse prerequisites
 
 Active scenario capture requires that the target Electron executable honors Node CLI inspector flags (`--inspect` or `--remote-debugging-port`) so that Playwright can establish its DevTools protocol session.
