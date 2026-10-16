@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { lstat, opendir, realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { sameRegularFileState } from "../filesystem/RegularFile.js";
 import {
-  openRegularFile,
-  sameRegularFileState,
-} from "../filesystem/RegularFile.js";
+  withOwnedRegularFile,
+  RegularFileCancelled,
+  RegularFileCleanupFailure,
+} from "../filesystem/OwnedRegularFile.js";
+import type { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
@@ -37,12 +40,22 @@ const REQUIRED = [
   "data/languages/allegrex.cspec",
 ];
 
+export interface InspectGhidraPspExtensionOptions {
+  readonly signal?: AbortSignal;
+  readonly retainFailedClose?: (owner: OwnedFileHandle) => void;
+}
+
 /** Read-only fingerprint of all installed files; no home scanning or installation. */
 export const inspectGhidraPspExtension = async (
   root: string,
   ghidraVersion: string,
-  signal?: AbortSignal,
+  signalOrOptions?: AbortSignal | InspectGhidraPspExtensionOptions,
 ): Promise<GhidraPspExtension> => {
+  const options: InspectGhidraPspExtensionOptions =
+    signalOrOptions instanceof AbortSignal
+      ? { signal: signalOrOptions }
+      : (signalOrOptions ?? {});
+  const signal = options.signal;
   signal?.throwIfAborted();
   if (!isAbsolute(root) || (await realpath(root)) !== root)
     throw new Error(
@@ -93,53 +106,60 @@ export const inspectGhidraPspExtension = async (
   for (const relative of files) {
     signal?.throwIfAborted();
     const path = join(root, relative);
-    const handle = await openRegularFile(path, { symlinks: "reject", signal });
-    try {
-      const before = await handle.stat();
-      if (
-        !Number.isSafeInteger(before.size) ||
-        before.size > MAX_BYTES - bytesRead
-      )
-        throw new Error(
-          "Allegrex extension bytes exceed the inspection limit.",
-        );
-      if (relative === "extension.properties" && before.size > 65536)
-        throw new Error(
-          "Allegrex extension properties exceed the inspection limit.",
-        );
-      hash.update(JSON.stringify([relative, before.size]));
-      const buffer = Buffer.alloc(Math.min(65536, before.size + 1));
-      let offset = 0;
-      const chunks: Buffer[] = [];
-      while (offset < before.size) {
-        signal?.throwIfAborted();
-        const read = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, before.size - offset),
-          offset,
-        );
-        if (read.bytesRead === 0)
-          throw new Error(`Truncated Allegrex component: ${relative}`);
-        const chunk = buffer.subarray(0, read.bytesRead);
-        hash.update(chunk);
+    await withOwnedRegularFile(
+      path,
+      {
+        symlinks: "reject",
+        ...(signal === undefined ? {} : { signal }),
+        ...(options.retainFailedClose === undefined
+          ? {}
+          : { retainFailedClose: options.retainFailedClose }),
+      },
+      async (handle) => {
+        const before = await handle.stat();
+        if (
+          !Number.isSafeInteger(before.size) ||
+          before.size > MAX_BYTES - bytesRead
+        )
+          throw new Error(
+            "Allegrex extension bytes exceed the inspection limit.",
+          );
+        if (relative === "extension.properties" && before.size > 65536)
+          throw new Error(
+            "Allegrex extension properties exceed the inspection limit.",
+          );
+        hash.update(JSON.stringify([relative, before.size]));
+        const buffer = Buffer.alloc(Math.min(65536, before.size + 1));
+        let offset = 0;
+        const chunks: Buffer[] = [];
+        while (offset < before.size) {
+          signal?.throwIfAborted();
+          const read = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, before.size - offset),
+            offset,
+          );
+          if (read.bytesRead === 0)
+            throw new Error(`Truncated Allegrex component: ${relative}`);
+          const chunk = buffer.subarray(0, read.bytesRead);
+          hash.update(chunk);
+          if (relative === "extension.properties")
+            chunks.push(Buffer.from(chunk));
+          offset += read.bytesRead;
+        }
+        if (
+          !sameRegularFileState(before, await handle.stat()) ||
+          !sameRegularFileState(before, await lstat(path))
+        )
+          throw new Error(
+            `Allegrex component changed during inspection: ${relative}`,
+          );
+        bytesRead += before.size;
         if (relative === "extension.properties")
-          chunks.push(Buffer.from(chunk));
-        offset += read.bytesRead;
-      }
-      if (
-        !sameRegularFileState(before, await handle.stat()) ||
-        !sameRegularFileState(before, await lstat(path))
-      )
-        throw new Error(
-          `Allegrex component changed during inspection: ${relative}`,
-        );
-      bytesRead += before.size;
-      if (relative === "extension.properties")
-        properties = Buffer.concat(chunks);
-    } finally {
-      await handle.close();
-    }
+          properties = Buffer.concat(chunks);
+      },
+    );
   }
   // Ghidra's extension.properties version is the compatible Ghidra version,
   // not the extension release (e.g. v21.4); content identity supplies the latter.
@@ -168,13 +188,33 @@ export const inspectGhidraPspExtension = async (
   };
 };
 
+export interface ResolveGhidraPspExtensionOptions extends InspectGhidraPspExtensionOptions {}
+
+const isPspExtensionCancellation = (
+  cause: unknown,
+  signal: AbortSignal | undefined,
+): boolean =>
+  cause instanceof RegularFileCancelled ||
+  cause instanceof AnalysisCancelledError ||
+  (cause instanceof Error && cause.name === "AbortError") ||
+  (signal?.aborted === true && cause === signal.reason);
+
 /** Resolve prerequisites before opening or admitting cached PSP analysis. */
 export const resolveGhidraPspExtension = async (
   installation: GhidraInstallationInspection,
-  signal?: AbortSignal,
+  signalOrOptions?: AbortSignal | ResolveGhidraPspExtensionOptions,
 ): Promise<Result<GhidraPspExtension, AnalysisError>> => {
+  const options: ResolveGhidraPspExtensionOptions =
+    signalOrOptions instanceof AbortSignal
+      ? { signal: signalOrOptions }
+      : (signalOrOptions ?? {});
+  const signal = options.signal;
   if (signal?.aborted)
-    return err(new AnalysisCancelledError("resolve_analysis_profile"));
+    return err(
+      new AnalysisCancelledError("resolve_analysis_profile", {
+        cause: signal.reason,
+      }),
+    );
   try {
     if (
       installation.status !== "available" ||
@@ -194,19 +234,39 @@ export const resolveGhidraPspExtension = async (
       await inspectGhidraPspExtension(
         root,
         installation.providerVersion,
-        signal,
+        options,
       ),
     );
   } catch (cause: unknown) {
-    if (signal?.aborted)
-      return err(new AnalysisCancelledError("resolve_analysis_profile"));
-    const reason = `PSP_EXTENSION_UNAVAILABLE: ${cause instanceof Error ? cause.message : String(cause)} Use a compatible caller-installed ghidra-allegrex under GHIDRA_INSTALL_DIR/Ghidra/Extensions; REA does not install it.`;
+    if (isPspExtensionCancellation(cause, signal))
+      return err(
+        new AnalysisCancelledError("resolve_analysis_profile", {
+          cause: cause instanceof RegularFileCancelled ? cause.reason : cause,
+        }),
+      );
+    const primary =
+      cause instanceof RegularFileCleanupFailure &&
+      cause.outcome.kind === "failed"
+        ? cause.outcome.cause
+        : cause;
+    const reason = `PSP_EXTENSION_UNAVAILABLE: ${primary instanceof Error ? primary.message : String(primary)} Use a compatible caller-installed ghidra-allegrex under GHIDRA_INSTALL_DIR/Ghidra/Extensions; REA does not install it.`;
+    const cleanup =
+      cause instanceof RegularFileCleanupFailure
+        ? {
+            reason: cause.message,
+            resources: [cause.path],
+          }
+        : undefined;
     return err(
       new AnalysisCapabilityUnavailableError(
         "ghidra",
         "resolve_analysis_profile",
         reason,
-        { cause, userMessage: reason },
+        {
+          cause,
+          userMessage: reason,
+          ...(cleanup === undefined ? {} : { cleanup }),
+        },
       ),
     );
   }
