@@ -3,7 +3,7 @@ import type { ObjcSwiftMetadata } from "../domain/native/objcSwiftMetadata.js";
 import type { Segment, Section } from "./AppleMachoSelection.js";
 import { boundClassName, decodeObjcCategories } from "./AppleObjcCategories.js";
 import { readObjcPropertiesOf } from "./AppleObjcProperties.js";
-import type { DecodeIssue } from "./AppleDispatchDecodeFacts.js";
+import { issue, type DecodeIssue } from "./AppleDispatchDecodeFacts.js";
 import { createObjcProtocolReader } from "./AppleObjcProtocols.js";
 import type {
   BinaryMetadataEvidence,
@@ -138,6 +138,23 @@ export const decodeObjcDispatchFacets = (input: {
       let selectorAddress = relative ? rel(entry) : read.pointer(entry);
       if (relative && (flags & 0x40000000) === 0)
         selectorAddress = read.pointer(selectorAddress);
+      // One empty selector is reported on its own, so its owner and the
+      // other methods in the list keep their decoded records.
+      const selector = read.string(selectorAddress);
+      if (selector.length === 0) {
+        const message = `Objective-C ${methodType} method ${String(index)} of ${className} at ${hex(entry)} has an empty selector`;
+        if (category === undefined) failures.push(message);
+        else
+          categoryIssues.push(
+            issue(
+              "objc_properties_categories",
+              "category_method_selector_empty",
+              `Category ${category}: ${message}`,
+              hex(entry),
+            ),
+          );
+        continue;
+      }
       const implementation = relative
         ? rel(entry + 8n)
         : read.pointer(entry + 16n);
@@ -162,7 +179,6 @@ export const decodeObjcDispatchFacets = (input: {
         // best-effort cleanup: external/chained pointers remain unresolved.
         void cause;
       }
-      const selector = read.string(selectorAddress);
       selectors.push(selector);
       result.objc_dispatch_implementations.push({
         class_name: className,

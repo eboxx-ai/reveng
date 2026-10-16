@@ -519,6 +519,77 @@ describe("malformed Apple dispatch metadata", () => {
     ).toMatchObject({ status: "partial", examined: 3 });
   });
 
+  it.each([false, true])(
+    "reports an empty method selector without discarding its class or sibling methods (relative=%s)",
+    (relative) => {
+      const bytes = fixture(relative);
+      bytes.writeUInt32LE(2, 0x484);
+      // The first method names an empty string; the second is the valid method.
+      if (relative) {
+        bytes.writeInt32LE(0x478 - 0x488, 0x488);
+        bytes.writeInt32LE(0x460 - 0x494, 0x494);
+        bytes.writeInt32LE(0x5c0 - 0x498, 0x498);
+        bytes.writeInt32LE(0x700 - 0x49c, 0x49c);
+      } else {
+        bytes.writeBigUInt64LE(base + 0x478n, 0x488);
+        bytes.writeBigUInt64LE(base + 0x460n, 0x4a0);
+        bytes.writeBigUInt64LE(base + 0x5c0n, 0x4a8);
+        bytes.writeBigUInt64LE(base + 0x700n, 0x4b0);
+      }
+      const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
+      expect(result.objc_dispatch_implementations).toMatchObject([
+        {
+          class_name: "Fixture",
+          selector: "performAction:",
+          implementation_address: "0x100000700",
+          location: { file_offset: relative ? 0x494 : 0x4a0 },
+        },
+      ]);
+      expect(result.objc_classes.map(({ name }) => name)).toEqual([
+        "Fixture",
+        "Fixture",
+      ]);
+      expect(result.objc_classes[0]?.methods).toMatchObject([
+        { selector: "performAction:" },
+      ]);
+      expect(result.objc_ivars).toMatchObject([{ name: "state" }]);
+      expect(
+        result.coverage.find(
+          ({ facet }) => facet === "objc_class_method_ivar_metadata",
+        ),
+      ).toMatchObject({
+        status: "partial",
+        reason: expect.stringContaining(
+          "Objective-C instance method 0 of Fixture at 0x100000488 has an empty selector",
+        ),
+      });
+    },
+  );
+
+  it("reports an empty category method selector in category coverage only", () => {
+    const bytes = fixture(false, "partial-method");
+    bytes.writeBigUInt64LE(base + 0x478n, 0xb88);
+    const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
+    expect(result.objc_categories).toMatchObject([
+      { name: "FixtureCategory", class_name: "Fixture", instance_methods: [] },
+    ]);
+    const classCoverage = ({ coverage }: typeof result) =>
+      coverage.find(({ facet }) => facet === "objc_class_method_ivar_metadata");
+    expect(classCoverage(result)).toEqual(
+      classCoverage(decodeAppleDispatchMetadata(fixture(), 100, provenance)),
+    );
+    expect(
+      result.coverage.find(
+        ({ facet }) => facet === "objc_properties_categories",
+      ),
+    ).toMatchObject({
+      status: "partial",
+      reason: expect.stringContaining(
+        "Category FixtureCategory: Objective-C instance method 0 of Fixture at 0x100000b88 has an empty selector",
+      ),
+    });
+  });
+
   it("retains valid Swift class vtable siblings when one descriptor has an empty class name", () => {
     const bytes = Buffer.alloc(4096);
     const base = 0x100000000n;
