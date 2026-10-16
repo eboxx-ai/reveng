@@ -1,6 +1,7 @@
 import { registerCaptureCommands } from "./cli/captureCommands.js";
 import { registerSignalCommands } from "./cli/signalCommands.js";
 import { registerWasmCommands } from "./cli/wasmCommands.js";
+import { registerJvmCommands } from "./cli/jvmCommands.js";
 import { snapshotEnvironment } from "./process/snapshotEnvironment.js";
 import { createDirectAnalysis } from "./composition/directAnalysis.js";
 import { registerEvmCommands } from "./cli/evmCommands.js";
@@ -102,6 +103,7 @@ export const createCli = (
   registerCoreAnalysisCommands(cli, logger, analysis.runDirectAnalysis);
   registerUtilityCommands(cli, logger, environment, analysis);
   registerWasmCommands(cli, logger, environment);
+  registerJvmCommands(cli, logger, environment);
   registerCaptureCommands(cli, logger, environment);
   registerSignalCommands(cli, logger, environment);
   registerEvmCommands(cli, logger, environment);

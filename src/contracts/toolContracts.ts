@@ -1,6 +1,7 @@
 import { CAPTURE_TOOL_CONTRACTS } from "./captures/captureToolContracts.js";
 import { SIGNAL_TOOL_CONTRACTS } from "./signals/signalToolContracts.js";
 import { WASM_TOOL_CONTRACTS } from "./wasm/wasmToolContracts.js";
+import { JVM_TOOL_CONTRACTS } from "./jvm/jvmToolContracts.js";
 import { EVM_TOOL_CONTRACTS } from "./evm/evmToolContracts.js";
 import { GO_TOOL_CONTRACTS } from "./go/goToolContracts.js";
 import { RUST_TOOL_CONTRACTS } from "./rust/rustToolContracts.js";
@@ -47,6 +48,7 @@ export const TOOL_CONTRACTS = [
   ...GO_TOOL_CONTRACTS,
   ...RUST_TOOL_CONTRACTS,
   ...WASM_TOOL_CONTRACTS,
+  ...JVM_TOOL_CONTRACTS,
   ...SQLITE_TOOL_CONTRACTS,
   ...CAPTURE_TOOL_CONTRACTS,
   ...SIGNAL_TOOL_CONTRACTS,

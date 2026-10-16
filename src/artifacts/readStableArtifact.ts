@@ -47,6 +47,57 @@ const afterValidation = async <T>(
   }
 };
 
+/**
+ * Read only the leading bytes of a regular file, independent of its total size,
+ * to sniff a container magic before deciding how to read the whole artifact. A
+ * large archive must be classifiable without first admitting it under a
+ * class-file byte budget. Uses the same no-symlink, no-follow open and handle
+ * ownership as {@link readStableArtifact}; returns fewer bytes when the file is
+ * shorter.
+ */
+export const peekArtifactMagic = async (
+  path: string,
+  byteCount: number,
+  signal?: AbortSignal,
+  fileSystem: StableArtifactFileSystem = FILE_SYSTEM,
+  resourceScope?: ArtifactResourceScope,
+): Promise<Buffer> => {
+  assertArtifactReadActive(signal);
+  const before = await fileSystem.lstat(path);
+  if (!before.isFile() || before.isSymbolicLink())
+    throw new ArtifactReaderFailure(
+      "path",
+      `Expected a regular file without a symlink: ${path}`,
+    );
+  const file = await afterValidation(path, "before open", () =>
+    fileSystem.open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    ),
+  );
+  return withArtifactFileHandle(
+    path,
+    file,
+    resourceScope,
+    signal,
+    async (file) => {
+      const opened = await file.stat({ bigint: true });
+      if (
+        !opened.isFile() ||
+        opened.dev !== before.dev ||
+        opened.ino !== before.ino
+      )
+        throw new ArtifactReaderFailure(
+          "integrity",
+          `Artifact changed before open: ${path}`,
+        );
+      const buffer = Buffer.alloc(byteCount);
+      const { bytesRead } = await file.read(buffer, 0, byteCount, 0);
+      return buffer.subarray(0, bytesRead);
+    },
+  );
+};
+
 /** Read one bounded regular file and reject replacement or in-place changes. */
 export const readStableArtifact = async (
   path: string,

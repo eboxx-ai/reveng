@@ -206,6 +206,7 @@
     "verify:ghidra:windows": "npm run build:cached && npm run build:ghidra-windows-fixture && node scripts/verify-real-ghidra-windows.mjs",
     "verify:browser": "npm run build:cached && node scripts/verify-real-browser.mjs",
     "verify:frida": "npm run build:cached && node scripts/verify-frida.mjs",
+    "verify:jvm": "npm run build:cached && node scripts/verify-jvm-debug-metadata.mjs",
     "verify:frida:bindings": "tsc --noEmit -p tsconfig.frida-verification.json",
     "verify:browser:dom": "node scripts/verify-browser-dom-destinations.mjs",
     "verify:browser:network": "npm run build:cached && node scripts/verify-browser-network.mjs",

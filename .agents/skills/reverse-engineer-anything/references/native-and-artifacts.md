@@ -77,6 +77,17 @@ and tool profile. Text offsets count UTF-16 code units; follow `next_offset`.
 The complete source remains retained after an oversized MCP reply. No target
 execution or network acquisition is implied, and WAT is decoded representation.
 
+## Offline JVM debug metadata
+
+Use `inspect_jvm_debug_metadata` for a selected local `.class` file, or a class
+`entry` inside a `.jar` (with optional multi-release `release`). It reports the
+compiler-emitted `SourceFile`, `LineNumberTable`, `LocalVariableTable` and
+`LocalVariableTypeTable` and classifies each method's debugging readiness
+(`present | partial | stripped | malformed | not-applicable`), binding bytecode
+offsets, local slots and scope ranges to the method's name and descriptor. No
+Java executes; `SourceDebugExtension` stays opaque; decompiler line numbers are
+never substituted for compiler positions.
+
 ## Native targets
 
 After `open_binary`, use focused search, procedure, or function tools directly.

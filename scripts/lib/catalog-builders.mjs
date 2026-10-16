@@ -35,6 +35,7 @@ export const toolFamilyCatalog = (sources) => {
         ...sources.goContracts.GO_TOOL_CONTRACTS,
         ...sources.rustContracts.RUST_TOOL_CONTRACTS,
         ...sources.wasmContracts.WASM_TOOL_CONTRACTS,
+        ...sources.jvmContracts.JVM_TOOL_CONTRACTS,
         ...sources.sqliteContracts.SQLITE_TOOL_CONTRACTS,
         ...sources.captureContracts.CAPTURE_TOOL_CONTRACTS,
         ...sources.signalContracts.SIGNAL_TOOL_CONTRACTS,
@@ -256,6 +257,10 @@ export const providerCatalog = (sources) => {
       contracts: sources.wasmContracts.WASM_TOOL_CONTRACTS.filter(
         ({ kind }) => kind === "artifact-provider",
       ),
+    },
+    {
+      identity: sources.jvmProvider.JVM_PROVIDER_IDENTITY,
+      contracts: sources.jvmContracts.JVM_TOOL_CONTRACTS,
     },
     {
       identity: sources.evmProvider.EVMOLE_PROVIDER_IDENTITY,

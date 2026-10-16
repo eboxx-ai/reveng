@@ -154,6 +154,12 @@ explicit path or endpoint and do not need it.
   Select JavaScript glue and candidate paths explicitly and preserve URL/path
   ambiguity. No implicit fetch or target execution; WAT is not original source.
   See the [WASM guide](https://github.com/morluto/rea/blob/main/docs/wasm-artifacts.md).
+- Explicit local JVM `.class` file or JAR entry: `inspect_jvm_debug_metadata`.
+  Reports compiler-emitted debug metadata (SourceFile, line numbers,
+  local-variable slots and scope ranges) and per-method debugging readiness; for
+  a JAR, select a class `entry` and optional multi-release `release`. No Java
+  executes; decompiler line numbers are never substituted for compiler positions.
+  See the [JVM guide](https://github.com/morluto/rea/blob/main/docs/jvm-debug-metadata.md).
 - Explicit local EVM bytecode carrier: `inspect_evm_interface` with caller-selected
   `raw` or `hex` encoding. Preserve carrier/decoded digests and treat selectors,
   argument strings and mutability as inferred candidates; this performs no chain

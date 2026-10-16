@@ -88,6 +88,7 @@ const EXECUTION_WORDING_EXCEPTIONS: Readonly<Record<string, string>> = {
   inspect_adb_package: "reports install times without changing the device",
   list_adb_processes: "lists running processes without changing the device",
   inspect_web_event_listeners: "states it does not evaluate JavaScript",
+  inspect_jvm_debug_metadata: "states that no Java executes",
 };
 
 const declaresForeignAuthority = (name: string): boolean => {
